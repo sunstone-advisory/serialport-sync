@@ -1,5 +1,5 @@
 {
-    "name": "@sunstoneadvisory/serialport-sync",
+    "name": "serialport-synchronous",
     "version": "0.0.1",
     "description": "Promise based library for synchronous request-response styled communication with serialport",
     "author": "Brendon Stephens <brendon.stephens@sunstoneadvisory.com.au>",

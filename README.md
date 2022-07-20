@@ -1,12 +1,12 @@
-# serialport-sync
+# serialport-synchronous
 [![semantic-release: angular](https://img.shields.io/badge/semantic--release-angular-e10079?logo=semantic-release)](https://github.com/semantic-release/semantic-release)
 
 ## Overview
-serialport-sync is a simple promise based library for Node.js that allows for synchronous request-response styled communication with serialport
+serialport-synchronous is a simple promise based library for Node.js that allows for synchronous request-response styled communication with serialport
 
 ## Installation
 ```bash
-npm install @sunstoneadvisory/serialport-sync
+npm install serialport-synchronous
 ```
 
 ## Usage Scenario

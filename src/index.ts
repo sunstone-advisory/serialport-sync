@@ -19,6 +19,9 @@ export class SerialPortController extends TypedEmitter<SerialPortControllerInter
 
   /* Function handlers for known sporadic or unsolicited messages from the serial port device */
   #handlers: Handler[] = []
+  get handlers () {
+    return this.#handlers
+  }
 
   /**
    * SerialPortController constructor
@@ -90,6 +93,16 @@ export class SerialPortController extends TypedEmitter<SerialPortControllerInter
         resolve()
       }
     })
+  }
+
+  /**
+   * Indicates if the connection to the serial
+   * port is open.
+   *
+   * @returns {boolean}
+   */
+  isOpen (): boolean {
+    return this.#serial.isOpen
   }
 
   /**
@@ -212,7 +225,7 @@ export class SerialPortController extends TypedEmitter<SerialPortControllerInter
       this.#serial.write(request.buffer)
     } else {
       this.#logger.info(request.description ?? 'Writing text to port')
-      this.#logger.info('>> [TEXT] ' + request.text)
+      this.#logger.info('>> ' + request.text)
       this.#serial.write(request.text + '\r\n')
     }
   }

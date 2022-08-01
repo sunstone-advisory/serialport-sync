@@ -1,10 +1,10 @@
-import { SerialPort, ReadlineParser } from 'serialport'
+import { SerialPort, ReadlineParser, InterByteTimeoutParser } from 'serialport'
 import { TypedEmitter } from 'tiny-typed-emitter'
-import { Request, Context, LogEvent, LogLevel, Handler } from './types'
+import { Context, LogEvent, LogLevel, Handler, RegexRequest, BinaryRequest } from './types'
 
 export interface SerialPortControllerInterface {
   'log': (message: LogEvent) => void
-  'unexpected-message': (message: string) => void
+  'unexpected-data': (data: Buffer) => void
 }
 
 export class SerialPortController extends TypedEmitter<SerialPortControllerInterface> {
@@ -22,6 +22,15 @@ export class SerialPortController extends TypedEmitter<SerialPortControllerInter
   get handlers () {
     return this.#handlers
   }
+
+  /* Indicates that inbound serial data should be parsed as binary */
+  #binaryMode: boolean = false
+
+  /** Serial port parser to read input as string using demimiter */
+  #readLineParser: ReadlineParser
+
+  /** Serial port parser to read input as binary buffer using timer or buffer size */
+  #binaryParser: InterByteTimeoutParser
 
   /**
    * SerialPortController constructor
@@ -49,11 +58,13 @@ export class SerialPortController extends TypedEmitter<SerialPortControllerInter
     const readlineParser = new ReadlineParser({ delimiter: '\r\n' })
 
     readlineParser.on('data', (data: string) => {
-      this.#handleData(data)
+      this.#handleStringData(data)
     })
 
     serialPort.pipe(readlineParser)
 
+    this.#binaryMode = false
+    this.#readLineParser = readlineParser
     this.#serial = serialPort
 
     if (options.handlers) this.#handlers = options.handlers
@@ -96,8 +107,7 @@ export class SerialPortController extends TypedEmitter<SerialPortControllerInter
   }
 
   /**
-   * Indicates if the connection to the serial
-   * port is open.
+   * Indicates if the connection to the serial port is open.
    *
    * @returns {boolean}
    */
@@ -119,6 +129,29 @@ export class SerialPortController extends TypedEmitter<SerialPortControllerInter
     log: (level: LogLevel, message: string) => this.emit('log', { level, datetime: new Date(), message })
   }
 
+  #enableBinaryMode (interval: number, maxBufferSize: number) {
+    if (this.#binaryMode) {
+      this.#serial.unpipe(this.#binaryParser)
+    } else {
+      this.#serial.unpipe(this.#readLineParser)
+    }
+
+    this.#binaryMode = true
+
+    const binaryParser = new InterByteTimeoutParser({ interval, maxBufferSize })
+    binaryParser.on('data', (data) => this.#handleBufferData(data))
+
+    this.#binaryParser = binaryParser
+    this.#serial.pipe(binaryParser)
+  }
+
+  #disableBinaryMode () {
+    if (this.#binaryMode) {
+      this.#serial.unpipe(this.#binaryParser)
+      this.#serial.pipe(this.#readLineParser)
+    }
+  }
+
   /**
    * Private function used to handle inbound data
    * received from the serial port connection. Each
@@ -128,7 +161,7 @@ export class SerialPortController extends TypedEmitter<SerialPortControllerInter
    * @param {string} data Inbound data from the serial device
    * @returns {void}
    */
-  #handleData (data: string): void {
+  #handleStringData (data: string): void {
     this.#logger.info('<< ' + data)
 
     // match data against unsolicited handlers
@@ -145,11 +178,11 @@ export class SerialPortController extends TypedEmitter<SerialPortControllerInter
     // received.
     if (!this.#current) {
       this.#logger.warn('Unexpected inbound message, no active handler')
-      this.emit('unexpected-message', data)
+      this.emit('unexpected-data', Buffer.from(data))
       return
     }
 
-    const request = this.#current.request
+    const request = this.#current.regex
 
     // if the response matches an expected error
     // format then reject the promise.
@@ -162,7 +195,7 @@ export class SerialPortController extends TypedEmitter<SerialPortControllerInter
     // append the response to the buffer
     if (request.bufferRegex && // do we need to buffer the response
       request.bufferRegex.test(data) && // does this match the buffer criteria
-      request.text !== data) { // ignore echo of commands back to port
+      request.data !== data) { // ignore echo of commands back to port
       if (this.#current.response === '') {
         this.#current.response += data
       } else {
@@ -177,6 +210,24 @@ export class SerialPortController extends TypedEmitter<SerialPortControllerInter
       this.#current.resolveFn(this.#current.response)
       return this.#processQueue()
     }
+  }
+
+  #handleBufferData (data: Buffer): void {
+    this.#logger.info('<< [BINARY] ' + data.toString('hex'))
+
+    // if no context exist there is nothing to do,
+    // let the user know an unexpected message was
+    // received.
+    if (!this.#current) {
+      this.#logger.warn('Unexpected inbound message, no active handler')
+      this.emit('unexpected-data', data)
+    }
+
+    this.#logger.debug('Received binary data, calling resolve handler')
+
+    this.#current.resolveFn(data)
+    this.#disableBinaryMode()
+    return this.#processQueue()
   }
 
   /**
@@ -207,43 +258,52 @@ export class SerialPortController extends TypedEmitter<SerialPortControllerInter
       return
     }
 
-    const request = next.request
-
-    // set the timeoutFn if specified in request
-    if (request.timeoutMs > 0) {
-      next.timeoutFn = setTimeout(() => {
-        this.#logger.warn(`Request timeout. Response not received within ${request.timeoutMs}ms`)
-        next.rejectFn(Error('Timeout'))
-        return this.#processQueue()
-      }, request.timeoutMs)
+    switch (next.mode) {
+      case 'regex':
+        // set the timeoutFn if specified in request
+        if (next.regex.timeoutMs > 0) {
+          next.timeoutFn = setTimeout(() => {
+            this.#logger.warn(`Request timeout. Response not received within ${next.regex.timeoutMs}ms`)
+            next.rejectFn(Error('Timeout'))
+            return this.#processQueue()
+          }, next.regex.timeoutMs)
+        }
+        break
+      case 'binary':
+        this.#enableBinaryMode(next.binary.interval, next.binary.maxBufferSize)
+        break
     }
 
+    const request = next[next.mode]
+
     // write either binary buffer or text to serial port
-    if (next.request.buffer) {
+    if (request.data instanceof Buffer) {
       this.#logger.info(request.description ?? 'Writing binary to port')
-      this.#logger.info('>> [BINARY] ' + request.buffer.toString('hex'))
-      this.#serial.write(request.buffer)
+      this.#logger.info('>> [BINARY] ' + request.data.toString('hex'))
+      this.#serial.write(request.data)
     } else {
       this.#logger.info(request.description ?? 'Writing text to port')
-      this.#logger.info('>> ' + request.text)
-      this.#serial.write(request.text + '\r\n')
+      this.#logger.info('>> ' + request.data)
+      this.#serial.write(request.data + '\r\n')
     }
   }
 
   /**
-   * Executes a request against the serial port connection.
+   * Executes a regular expression request against the serial
+   * port connection. Regular expression requests are resolved
+   * through the use of regular expression matches against
+   * string data received from the serial port device.
+   *
    * Each request contains criteria that determines
    * how the subsequent response messages from the serial
    * port device should be handled.
-   *
    *
    * If the controller is currently busy handling another
    * request, this request will be added to the back of
    * the queue and processed once all prior requests have
    * been processed.
    *
-   * @param {string} request.text The output data which will be written to the serial connection as a string
-   * @param {Buffer} request.buffer The output data which will be written to the serial connection as hex
+   * @param {string} request.data The output data which will be written to the serial connection
    * @param {number} request.timeoutMs The maximum time to wait until cancelling the request
    * @param {RegExp} request.successRegex Regular expression pattern that determines when to resolve the request
    * @param {RegExp} request.errorRegex Regular expression pattern that determines when to reject the request
@@ -252,16 +312,49 @@ export class SerialPortController extends TypedEmitter<SerialPortControllerInter
    *
    * @returns {Promise<string>}
    */
-  async execute (request: Request): Promise<string> {
+  async regexRequest (request: RegexRequest): Promise<string> {
     return new Promise((resolve, reject) => {
       if (!request.bufferRegex) request.bufferRegex = /^.+$/
 
-      const context = {
-        request,
+      const context: Context = {
+        mode: 'regex',
+        regex: request,
         resolveFn: resolve,
         rejectFn: reject,
         timeoutFn: null,
         response: ''
+      }
+
+      this.#queue.push(context)
+
+      if (!this.#current) this.#processQueue()
+    })
+  }
+
+  /**
+   * Executes a binary request against the serial port
+   * connection. Binary requests are based on an interval
+   * which determines the maximum time to wait between
+   * a stream chunk before flushing the stream.
+   *
+   * If the controller is currently busy handling another
+   * request, this request will be added to the back of
+   * the queue and processed once all prior requests have
+   * been processed.
+   *
+   * @param {string} request.data The output data which will be written to the serial connection
+   * @param {number} request.interval The maximum time to wait between stream chunks before resolving the promise
+   * @param {RegExp} request.maxBufferSize The maximum size of the buffer before resolving the promise
+   *
+   * @returns {Promise<Buffer>}
+   */
+  async binaryRequest (request: BinaryRequest): Promise<Buffer> {
+    return new Promise((resolve, reject) => {
+      const context: Context = {
+        mode: 'binary',
+        binary: request,
+        resolveFn: resolve,
+        rejectFn: reject
       }
 
       this.#queue.push(context)

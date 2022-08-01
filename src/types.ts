@@ -17,24 +17,33 @@ export type LogEvent = {
   datetime: Date
 }
 
-export type Request = {
+export type RegexRequest = {
   description?: string
+  data: Buffer | string
   timeoutMs: number
   successRegex: RegExp
   bufferRegex?: RegExp
   errorRegex?: RegExp
-} & ({
-  buffer: Buffer
-  text?: never
-} | {
-  text: string
-  buffer?: never
-})
+}
+
+export type BinaryRequest = {
+  description?: string
+  data: Buffer | string
+  interval: number
+  maxBufferSize: number
+}
 
 export type Context = {
-  request: Request
+  mode: 'regex' | 'binary'
   resolveFn: Function
   rejectFn: Function
-  timeoutFn: NodeJS.Timeout
+  timeoutFn?: NodeJS.Timeout
   response?: string
+} & ({
+  binary: BinaryRequest
+  regex?: never
 }
+| {
+  binary?: never
+  regex: RegexRequest
+})

@@ -10,6 +10,9 @@ export interface SerialPortControllerInterface {
 export class SerialPortController extends TypedEmitter<SerialPortControllerInterface> {
   /* The serial port connection to the device */
   #serial: SerialPort
+  get serial () {
+    return this.#serial
+  }
 
   /* The current request context to process against the serial port device */
   #current: Context
@@ -281,7 +284,7 @@ export class SerialPortController extends TypedEmitter<SerialPortControllerInter
       this.#logger.info(request.description ?? 'Writing binary to port')
       this.#logger.info('>> [BINARY] ' + request.data.toString('hex'))
       this.#serial.write(request.data)
-    } else {
+    } else if (typeof request.data === 'string') {
       this.#logger.info(request.description ?? 'Writing text to port')
       this.#logger.info('>> ' + request.data)
       this.#serial.write(request.data + '\r\n')

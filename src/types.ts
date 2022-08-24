@@ -19,7 +19,7 @@ export type LogEvent = {
 
 export type RegexRequest = {
   description?: string
-  data: Buffer | string
+  data?: Buffer | string
   timeoutMs: number
   successRegex: RegExp
   bufferRegex?: RegExp
